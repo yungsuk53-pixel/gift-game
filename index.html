@@ -853,24 +853,81 @@
       syncHeader(); startCountdownLoop(); renderLeaderboard(); updateBestBadges(); filterGameView(); updateAttemptBadges();
     }
     
-    async function leaveRoom(){
-      if (!STATE.room.code){ $('#joinSection').classList.remove('hidden'); $('#lobbySection').classList.add('hidden'); $('#winnerSection').classList.add('hidden'); return; }
-      if (!confirm('게임방을 나가시겠습니까?')) return;
-      await firebaseAPI.disconnect();
-      const keepNick = STATE.player.nickname;
-      const keepDevice = STATE.device;
-      STATE.room = { code:'', startAt:null, endAt:null, status:'waiting', isHost:false, hostId:null, gameKey:'reaction', limitPerGame:0 };
-      STATE.player.nickname = keepNick;
-      STATE.device = keepDevice;
-      saveAll();
-      history.replaceState(null, '', location.pathname);
-      $('#joinSection').classList.remove('hidden');
-      $('#lobbySection').classList.add('hidden');
-      $('#winnerSection').classList.add('hidden');
-      toast('메인으로 이동');
-    }
-    $('#leaveBtn').addEventListener('click', leaveRoom);
-    $('#backToMainBtn')?.addEventListener('click', leaveRoom);
+    // 기존 leaveRoom 함수를 찾아서 다음으로 교체
+async function leaveRoom(){
+  if (!STATE.room.code){ 
+    $('#joinSection').classList.remove('hidden'); 
+    $('#lobbySection').classList.add('hidden'); 
+    $('#winnerSection').classList.add('hidden'); 
+    return; 
+  }
+  
+  // 모바일 친화적인 확인 방식
+  const confirmLeave = window.confirm ? confirm('게임방을 나가시겠습니까?') : true;
+  if (!confirmLeave) return;
+  
+  // Firebase 연결 해제 (에러 무시)
+  try {
+    await firebaseAPI.disconnect();
+  } catch(e) {
+    console.log('disconnect error ignored', e);
+  }
+  
+  // 상태 초기화
+  const keepNick = STATE.player.nickname;
+  const keepDevice = STATE.device;
+  STATE.room = { 
+    code:'', 
+    startAt:null, 
+    endAt:null, 
+    status:'waiting', 
+    isHost:false, 
+    hostId:null, 
+    gameKey:'reaction', 
+    limitPerGame:0 
+  };
+  STATE.player.nickname = keepNick;
+  STATE.device = keepDevice;
+  
+  // 로컬 저장소 업데이트
+  saveAll();
+  
+  // URL 파라미터 제거
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('room');
+    window.history.replaceState(null, '', url.toString());
+  } catch(e) {
+    window.history.replaceState(null, '', window.location.pathname);
+  }
+  
+  // 화면 전환
+  $('#joinSection').classList.remove('hidden');
+  $('#lobbySection').classList.add('hidden');
+  $('#winnerSection').classList.add('hidden');
+  
+  // 카운트다운 타이머 정리
+  if (countdownTimer) {
+    clearInterval(countdownTimer);
+    countdownTimer = null;
+  }
+  
+  toast('메인으로 이동');
+}
+
+// 버튼 이벤트 리스너도 수정
+$('#leaveBtn').addEventListener('click', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  leaveRoom();
+});
+
+$('#backToMainBtn')?.addEventListener('click', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  leaveRoom();
+});
+
 
     // 게임 가시성
     function filterGameView(){

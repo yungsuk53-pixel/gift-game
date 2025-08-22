@@ -1023,6 +1023,614 @@ $('#backToMainBtn')?.addEventListener('click', (e) => {
         await firebaseAPI.pushScore(true);
       }
     }
+// 게임 로직 (모바일 최적화)
+// 1) 반응속도
+let reactionBusy=false;
+$('#reactionStart').addEventListener('click', async ()=>{
+  if (!canStartGame('reaction')) return;
+  incAttempt('reaction');
+  if (reactionBusy) return; reactionBusy=true;
+  const area = $('#reactionArea'); area.innerHTML='';
+  const panel = document.createElement('div'); panel.className='center';
+  const msg = document.createElement('div'); msg.className='big';
+  const sub = document.createElement('div'); sub.className='hint';
+  const roundBox = document.createElement('div'); panel.append(msg,sub,roundBox); area.append(panel);
+  let rounds=3, results=[];
+  for (let i=1;i<=rounds;i++){
+    msg.textContent='곧 시작...'; sub.textContent='녹색이 되면 터치!'; roundBox.textContent=`라운드 ${i}/3`;
+    area.style.background='transparent';
+    await delay(rnd(800,1600));
+    let early=false, clicked=false;
+    area.style.background = '#3b1620';
+    const earlyClick = ()=> { early=true; };
+    area.addEventListener('pointerdown', earlyClick, { once:true });
+    await delay(rnd(500,1400));
+    area.removeEventListener('pointerdown', earlyClick);
+    area.style.background = '#183324';
+    msg.textContent='터치!';
+    const start = now();
+    const onClick = ()=>{
+      if (clicked) return; clicked=true;
+      const t = now() - start;
+      results.push(early? 9999 : t);
+      area.removeEventListener('pointerdown', onClick);
+    };
+    area.addEventListener('pointerdown', onClick);
+    let waited=0;
+    while (results.length < i){ await delay(10); waited+=10; if (waited>6000){ results.push(9999); area.removeEventListener('pointerdown', onClick); break; } }
+    msg.textContent = early? '성급!' : `${results[results.length-1]} ms`;
+    sub.textContent = early? '페널티 9999ms' : '좋아요!';
+    await delay(700);
+  }
+  const valid = results.map(v=> Math.min(v,1500));
+  const avg = Math.round(valid.reduce((a,b)=>a+b,0)/valid.length);
+  const score = clamp(Math.round(1200 - avg*2), 0, 1000);
+  area.style.background='transparent';
+  area.innerHTML = `<div class="center"><div class="big">평균 ${avg} ms</div><div class="hint">점수: ${score}</div><button class="btn acc" id="reactionRetry">다시</button></div>`;
+  $('#reactionRetry').addEventListener('click', ()=>$('#reactionStart').click());
+  await submitScore('reaction', score, { avg });
+  reactionBusy=false;
+});
+
+// 2) 에임 (모바일 터치)
+let aimRun=null;
+$('#aimStart').addEventListener('click', startAim);
+function startAim(){
+  if (!canStartGame('aim')) return;
+  incAttempt('aim');
+  const area = $('#aimArea'); area.innerHTML='';
+  const hud = document.createElement('div');
+  hud.className='row'; hud.style.position='absolute'; hud.style.left='8px'; hud.style.top='8px'; hud.style.gap='6px';
+  hud.innerHTML = `<div class="badge">30s</div><div class="badge">명중: <span id="aimHits">0</span></div><div class="badge">오: <span id="aimMiss">0</span></div><div class="badge"><span id="aimAccHud">0%</span></div>`;
+  area.append(hud);
+  const end = now() + 30_000;
+  let hits=0, miss=0;
+  const updateAcc = ()=> $('#aimAccHud').textContent = (hits+miss? Math.round(hits/(hits+miss)*100):0)+'%';
+  const pop = (x,y,t="+100")=>{
+    const el=document.createElement('div'); el.textContent=t; el.style.position='absolute'; el.style.left=x+'px'; el.style.top=y+'px'; el.style.color='#bdf6ff'; el.style.fontWeight='900'; el.style.pointerEvents='none';
+    area.append(el); let dy=0; const iv=setInterval(()=>{ dy+=1; el.style.transform=`translateY(-${dy}px)`; el.style.opacity=(1-dy/40).toFixed(2); if(dy>40){clearInterval(iv); el.remove()} },16);
+  }
+  const onMiss = (e)=>{ const r=area.getBoundingClientRect(); miss++; $('#aimMiss').textContent=miss; pop(e.clientX-r.left, e.clientY-r.top,'-10'); updateAcc() };
+  area.addEventListener('pointerdown', onMiss);
+  function spawn(){
+    if (now()>end) return;
+    const size = rnd(32,48);
+    const t = document.createElement('div');
+    t.style.width=size+'px'; t.style.height=size+'px'; t.style.borderRadius='50%'; t.style.boxShadow='0 4px 16px rgba(0,0,0,.35)';
+    t.style.background='radial-gradient(circle, #b9f7ff 0, #6ae3ff 45%, #0a3b44)'; t.style.border='2px solid #42b9cc88';
+    const r = area.getBoundingClientRect();
+    const x = rnd(10, Math.max(10, r.width - size - 10));
+    const y = rnd(50, Math.max(50, r.height - size - 10));
+    t.style.position='absolute'; t.style.left=x+'px'; t.style.top=y+'px';
+    const hit=(e)=>{ e.stopPropagation(); hits++; $('#aimHits').textContent=hits; t.removeEventListener('pointerdown',hit); t.remove(); pop(x+size/2, y+size/2, '+100'); updateAcc() };
+    t.addEventListener('pointerdown', hit);
+    area.append(t);
+    setTimeout(()=> t.isConnected && t.remove(), rnd(800,1200));
+  }
+  const spawner = setInterval(()=> spawn(), rnd(320,480));
+  aimRun = setInterval(()=>{
+    if (now()>end){
+      clearInterval(aimRun); aimRun=null; clearInterval(spawner);
+      const acc = hits+miss? Math.round(hits/(hits+miss)*100) : 0;
+      const score = clamp(Math.round(hits*20 + acc*5 - miss*5), 0, 1000);
+      area.removeEventListener('pointerdown', onMiss);
+      area.innerHTML = `<div class="center"><div class="big">명중 ${hits}, ${acc}%</div><div class="hint">점수: ${score}</div><button class="btn acc" id="aimAgain">다시</button></div>`;
+      $('#aimAgain').addEventListener('click', startAim);
+      submitScore('aim', score, { acc, hits, miss });
+    }
+  }, 100);
+}
+
+// 3) 두더지 (모바일 터치)
+let moleTimer=null, moleState={ running:false, hits:0, miss:0, endAt:0 };
+function buildMoleGrid(){
+  const grid = $('#moleGrid'); grid.innerHTML='';
+  for (let i=0;i<16;i++){
+    const cell=document.createElement('div'); cell.className='mole-cell';
+    const m=document.createElement('div'); m.className='mole'; m.dataset.up='0';
+    cell.append(m);
+    cell.addEventListener('pointerdown', (e)=>{
+      if (!moleState.running) return;
+      if (m.dataset.up==='1'){
+        m.style.filter='brightness(1.6) saturate(1.6)';
+        moleState.hits++; $('#moleHits').textContent=moleState.hits;
+        setTimeout(()=>{ m.style.filter=''; m.dataset.up='0'; m.style.top='100%'; }, 100);
+      } else {
+        moleState.miss++; $('#moleMiss').textContent=moleState.miss;
+      }
+    });
+    grid.append(cell);
+  }
+}
+buildMoleGrid();
+$('#moleStart').addEventListener('click', ()=>{
+  if (!canStartGame('mole')) return;
+  incAttempt('mole');
+  const moles = $$('#moleGrid .mole');
+  moleState = { running:true, hits:0, miss:0, endAt: now()+30_000 };
+  $('#moleHits').textContent='0'; $('#moleMiss').textContent='0'; $('#moleTime').textContent='30';
+  if (moleTimer) clearInterval(moleTimer);
+  let lastIdx=-1;
+  moleTimer = setInterval(()=>{
+    const t = Math.max(0, Math.ceil((moleState.endAt - now())/1000)); $('#moleTime').textContent=t;
+    moles.forEach(m=>{ m.dataset.up='0'; m.style.top='100%'; });
+    const holes = rnd(1,3);
+    for (let i=0;i<holes;i++){
+      let idx=rnd(0,moles.length-1);
+      if (idx===lastIdx) idx=(idx+1)%moles.length;
+      lastIdx=idx;
+      const m=moles[idx];
+      m.dataset.up='1'; m.style.top='50%';
+      setTimeout(()=>{ if (m.dataset.up==='1'){ m.dataset.up='0'; m.style.top='100%'; } }, rnd(500,900));
+    }
+    if (now()>=moleState.endAt){
+      clearInterval(moleTimer); moleTimer=null; moleState.running=false; moles.forEach(m=>{ m.dataset.up='0'; m.style.top='100%' });
+      const acc = (moleState.hits + moleState.miss) ? (moleState.hits/(moleState.hits+moleState.miss)) : 0;
+      const score = clamp(Math.round(moleState.hits*25 + acc*100 - moleState.miss*5), 0, 1000);
+      toast(`종료! 점수 ${score}`); submitScore('mole', score, { hits:moleState.hits, miss:moleState.miss, acc: Math.round(acc*100) });
+    }
+  }, 700);
+});
+
+// 4) 수학 (모바일 키패드)
+let mathRun=null; let math={ ok:0, streak:0, endAt:0, q:null, running:false };
+function newQ(){ const ops=['+','+','+','-','x','x','+','-']; const op=ops[rnd(0,ops.length-1)]; let a,b; if(op==='+'||op==='-'){ a=rnd(10,99); b=rnd(5,99) } else { a=rnd(3,12); b=rnd(3,12) } const ans = op==='+'? a+b : op==='-'? a-b : a*b; return { t:`${a} ${op==='x'?'×':op} ${b}`, a:ans } }
+function renderMathQ(){ $('#mathQ').textContent = math.q ? `${math.q.t} = ?` : '시작!' }
+$('#mathStart').addEventListener('click', ()=>{
+  if (!canStartGame('math')) return;
+  incAttempt('math');
+  math = { ok:0, streak:0, endAt: now()+60_000, q:newQ(), running:true };
+  $('#mathOk').textContent='0'; $('#mathStreak').textContent='0'; $('#mathTime').textContent='60';
+  renderMathQ(); $('#mathAns').value=''; $('#mathAns').disabled=false; $('#mathAns').focus();
+  if (mathRun) clearInterval(mathRun);
+  mathRun = setInterval(()=>{
+    const t = Math.max(0, Math.ceil((math.endAt - now())/1000)); $('#mathTime').textContent=t;
+    if (now()>=math.endAt){
+      clearInterval(mathRun); mathRun=null; math.running=false;
+      const score = clamp(Math.round(math.ok*60 + math.streak*10), 0, 1000);
+      toast(`종료! 점수 ${score}`); submitScore('math', score, { ok:math.ok, streak:math.streak });
+    }
+  }, 250);
+});
+$('#mathAns').addEventListener('keydown', e=>{
+  if (!math.running) return;
+  if (e.key==='Enter'){
+    const v = parseInt($('#mathAns').value, 10);
+    if (v===math.q.a){ math.ok++; math.streak++; $('#mathOk').textContent=math.ok; $('#mathStreak').textContent=math.streak; math.q=newQ(); renderMathQ(); $('#mathAns').value='' }
+    else { math.streak=0; $('#mathStreak').textContent='0'; $('#mathAns').select(); }
+  }
+});
+
+// 5) 타자
+const WORDS = 'quick snow ocean river star lucky gentle brave swift neon mango cherry zebra coffee pizza mirror cloud rocket galaxy lemon tiger panda music velvet window sunset orange kiwi breeze summit vector photon gamma delta alpha bravo echo foxtrot'.split(' ');
+let typingRun=null, typing={ ok:0, charsOk:0, charsAll:0, endAt:0, running:false, word:'' };
+function newWord(){ return WORDS[rnd(0,WORDS.length-1)]; }
+function startTyping(){
+  if (!canStartGame('typing')) return;
+  incAttempt('typing');
+  typing = { ok:0, charsOk:0, charsAll:0, endAt: now()+20_000, running:true, word:newWord() };
+  $('#typingWord').textContent=typing.word; $('#typingOk').textContent='0'; $('#typingAcc').textContent='0%'; $('#typingTime').textContent='20';
+  $('#typingInput').disabled=false; $('#typingInput').value=''; $('#typingInput').focus();
+  if (typingRun) clearInterval(typingRun);
+  typingRun = setInterval(()=>{
+    const t = Math.max(0, Math.ceil((typing.endAt - now())/1000)); $('#typingTime').textContent=t;
+    if (now()>=typing.endAt){
+      clearInterval(typingRun); typingRun=null; typing.running=false; $('#typingInput').disabled=true;
+      const acc = typing.charsAll? Math.round(typing.charsOk/typing.charsAll*100) : 0;
+      const score = clamp(Math.round(typing.ok*50 + acc*3), 0, 1000);
+      toast(`종료! 점수 ${score}`); submitScore('typing', score, { words:typing.ok, acc });
+    }
+  }, 200);
+}
+$('#typingStart').addEventListener('click', startTyping);
+$('#typingInput').addEventListener('keydown', e=>{
+  if (!typing.running) return;
+  if (e.key==='Enter'){
+    const v = $('#typingInput').value.trim();
+    typing.charsAll += Math.max(v.length, typing.word.length);
+    let ok=0; for (let i=0;i<Math.min(v.length, typing.word.length);i++){ if (v[i]===typing.word[i]) ok++; }
+    typing.charsOk += ok;
+    if (v===typing.word){ typing.ok++; $('#typingOk').textContent=typing.ok; }
+    const acc = typing.charsAll? Math.round(typing.charsOk/typing.charsAll*100) : 0;
+    $('#typingAcc').textContent=acc+'%';
+    typing.word = newWord(); $('#typingWord').textContent=typing.word; $('#typingInput').value='';
+  }
+});
+
+// 6) 스루프 (모바일 터치)
+const COLORS = [
+  {name:'RED', css:'#ff5c5c'}, {name:'BLUE', css:'#6aa8ff'}, {name:'GREEN', css:'#59d37d'}, {name:'YELLOW', css:'#ffd866'},
+  {name:'PURPLE', css:'#c28bff'}, {name:'ORANGE', css:'#ffa76a'}
+];
+let stroopRun=null, stroop={ ok:0, wrong:0, endAt:0, running:false, targetCss:'#fff' };
+function renderStroopButtons(){
+  const row = $('#stroopBtns'); row.innerHTML='';
+  COLORS.forEach(c=>{
+    const b=document.createElement('button'); b.className='btn'; b.textContent=c.name;
+    b.style.borderColor = c.css+'55'; b.style.background='linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.03))'; b.style.color='#fff';
+    b.addEventListener('click', ()=> onStroopChoose(c));
+    row.append(b);
+  });
+}
+function nextStroop(){
+  const word = COLORS[rnd(0,COLORS.length-1)];
+  const color = COLORS[rnd(0,COLORS.length-1)];
+  $('#stroopWord').textContent = word.name;
+  $('#stroopWord').style.color = color.css;
+  stroop.targetCss = color.css;
+}
+function onStroopChoose(choice){
+  if (!stroop.running) return;
+  if (choice.css === stroop.targetCss){ stroop.ok++; $('#stroopOk').textContent=stroop.ok; }
+  else { stroop.wrong++; $('#stroopWrong').textContent=stroop.wrong; }
+  nextStroop();
+}
+$('#stroopStart').addEventListener('click', ()=>{
+  if (!canStartGame('stroop')) return;
+  incAttempt('stroop');
+  stroop = { ok:0, wrong:0, endAt: now()+30_000, running:true, targetCss:'#fff' };
+  $('#stroopOk').textContent='0'; $('#stroopWrong').textContent='0'; $('#stroopTime').textContent='30';
+  renderStroopButtons(); nextStroop();
+  if (stroopRun) clearInterval(stroopRun);
+  stroopRun = setInterval(()=>{
+    const t = Math.max(0, Math.ceil((stroop.endAt - now())/1000)); $('#stroopTime').textContent=t;
+    if (now()>=stroop.endAt){
+      clearInterval(stroopRun); stroopRun=null; stroop.running=false;
+      const acc = (stroop.ok+stroop.wrong)? Math.round(stroop.ok/(stroop.ok+stroop.wrong)*100) : 0;
+      const score = clamp(Math.round(stroop.ok*30 + acc*5 - stroop.wrong*2), 0, 1000);
+      toast(`종료! 점수 ${score}`); submitScore('stroop', score, { ok:stroop.ok, wrong:stroop.wrong, acc });
+    }
+  }, 200);
+});
+
+// 7) 패턴 메모리 (모바일 터치)
+let simon={ seq:[], inputIdx:0, round:0, running:false, pads:[], mode:'idle', bestRound: 0 };
+function simonPads(){ return [$('#simonPad1'), $('#simonPad2'), $('#simonPad3'), $('#simonPad4')]; }
+function simonFlash(el){
+  const prev = el.style.filter; el.style.filter='brightness(1.7) saturate(1.4)'; el.style.boxShadow='0 0 18px rgba(255,255,255,.25)';
+  setTimeout(()=>{ el.style.filter=prev||''; el.style.boxShadow=''; }, 220);
+}
+async function simonPlaySequence(){
+  simon.mode='show';
+  await delay(400);
+  for (let i=0;i<simon.seq.length;i++){
+    const p = simon.pads[simon.seq[i]];
+    simonFlash(p);
+    await delay(Math.max(260, 650 - simon.seq.length*20));
+  }
+  simon.mode='input';
+}
+function simonNextRound(){
+  simon.seq.push(rnd(0,3));
+  simon.round++; $('#simonRound').textContent=simon.round; simon.inputIdx=0;
+  simonPlaySequence();
+}
+function startSimon(){
+  if (!canStartGame('simon')) return;
+  incAttempt('simon');
+  simon = { seq:[], inputIdx:0, round:0, running:true, pads: simonPads(), mode:'idle', bestRound: STATE.scores.simon?.round||0 };
+  $('#simonRound').textContent='0'; $('#simonBestRound').textContent = simon.bestRound || 0;
+  simon.pads.forEach((p, idx)=>{
+    p.style.cursor='pointer';
+    p.onpointerdown = ()=>{
+      if (!simon.running || simon.mode!=='input') return;
+      simonFlash(p);
+      if (simon.seq[simon.inputIdx] === idx){
+        simon.inputIdx++;
+        if (simon.inputIdx >= simon.seq.length){
+          simonNextRound();
+        }
+      } else {
+        simon.running=false; simon.mode='idle';
+        const finalRound = simon.round;
+        simon.bestRound = Math.max(simon.bestRound, finalRound);
+        $('#simonBestRound').textContent = simon.bestRound;
+        const score = clamp(simon.bestRound*80, 0, 1000);
+        toast(`실패! 라운드 ${finalRound} (최고 ${simon.bestRound}) · 점수 ${score}`);
+        submitScore('simon', score, { round: simon.bestRound });
+      }
+    };
+  });
+  simonNextRound();
+}
+$('#simonStart').addEventListener('click', startSimon);
+
+// 8) 리듬 게임 (수정된 버전)
+let rhythm = { 
+  running: false, 
+  startT: 0, 
+  notes: [], 
+  stage: null, 
+  height: 420, 
+  travel: 1600,
+  stats: { perfect:0, great:0, good:0, miss:0, combo:0, bestCombo:0, hits:0, total:0, raw:0 },
+  raf: null
+};
+
+function makeBeatmap(){
+  const bpm = 120;
+  const secPerBeat = 60_000/bpm;
+  const beats = 40;
+  const startDelay = 2000;
+  const notes = [];
+  
+  for (let i=0; i<beats; i++){
+    const lane = rnd(0,3);
+    notes.push({ 
+      lane, 
+      time: startDelay + Math.round(i*secPerBeat),
+      hit: false,
+      spawned: false,
+      el: null
+    });
+    
+    if (Math.random() < 0.3){
+      const lane2 = (lane + rnd(1,3)) % 4;
+      notes.push({ 
+        lane: lane2, 
+        time: startDelay + Math.round(i*secPerBeat + secPerBeat/2),
+        hit: false,
+        spawned: false,
+        el: null
+      });
+    }
+  }
+  
+  notes.sort((a,b) => a.time - b.time);
+  return notes;
+}
+
+function resetRhythmHUD(){
+  $('#rhythmScore').textContent = '0';
+  $('#rhythmCombo').textContent = '0';
+  $('#rhythmAcc').textContent = '0%';
+}
+
+function rhythmSpawnNote(lane, y){
+  const stage = rhythm.stage;
+  const lanes = stage.querySelectorAll('.lane');
+  if (!lanes[lane]) return null;
+  
+  const n = document.createElement('div');
+  n.className = 'note';
+  n.style.transform = `translateY(${y}px)`;
+  lanes[lane].appendChild(n);
+  return n;
+}
+
+function rhythmClearNotes(){
+  if (!rhythm.stage) return;
+  rhythm.stage.querySelectorAll('.note').forEach(n => n.remove());
+}
+
+function rhythmJudge(delta){
+  const ad = Math.abs(delta);
+  if (ad <= 50) return 'perfect';
+  if (ad <= 100) return 'great';
+  if (ad <= 150) return 'good';
+  return 'miss';
+}
+
+function rhythmUpdateHUD(){
+  const total = rhythm.stats.total || 1;
+  const acc = Math.round((rhythm.stats.hits / total) * 100);
+  $('#rhythmAcc').textContent = acc + '%';
+  $('#rhythmCombo').textContent = rhythm.stats.combo;
+  
+  const potential = total * 10 || 1;
+  const score = clamp(Math.round((rhythm.stats.raw / potential) * 1000), 0, 1000);
+  $('#rhythmScore').textContent = score;
+}
+
+function rhythmEnd(){
+  rhythm.running = false;
+  
+  document.removeEventListener('keydown', rhythmKeydown);
+
+  $$('#rhythmStage .keycap').forEach(k => {
+    k.onpointerdown = null;
+    k.ontouchstart = null;
+  });
+  
+  if (rhythm.raf) {
+    cancelAnimationFrame(rhythm.raf);
+    rhythm.raf = null;
+  }
+  
+  rhythmClearNotes();
+  
+  const potential = rhythm.stats.total * 10 || 1;
+  const score = clamp(Math.round((rhythm.stats.raw / potential) * 1000), 0, 1000);
+  toast(`리듬 게임 종료! 점수: ${score}`);
+  
+  submitScore('rhythm', score, { 
+    perfect: rhythm.stats.perfect,
+    great: rhythm.stats.great,
+    good: rhythm.stats.good,
+    miss: rhythm.stats.miss,
+    acc: Math.round((rhythm.stats.hits / (rhythm.stats.total || 1)) * 100) 
+  });
+}
+
+function rhythmTryHitLane(lane){
+  if (!rhythm.running) return;
+  
+  const tNow = performance.now() - rhythm.startT;
+  let bestIdx = -1;
+  let bestDelta = 999999;
+  
+  for (let i = 0; i < rhythm.notes.length; i++){
+    const nt = rhythm.notes[i];
+    if (nt.hit || nt.lane !== lane) continue;
+    
+    const delta = tNow - nt.time;
+    const absDelta = Math.abs(delta);
+    
+    if (absDelta < 200 && absDelta < bestDelta){
+      bestDelta = absDelta;
+      bestIdx = i;
+    }
+  }
+  
+  if (bestIdx >= 0){
+    const nt = rhythm.notes[bestIdx];
+    const delta = tNow - nt.time;
+    const judge = rhythmJudge(delta);
+    
+    nt.hit = true;
+    rhythm.stats.total++;
+    
+    if (nt.el) {
+      nt.el.style.opacity = '0';
+      setTimeout(() => {
+        if (nt.el && nt.el.parentNode) {
+          nt.el.remove();
+          nt.el = null;
+        }
+      }, 100);
+    }
+    
+    if (judge === 'perfect'){
+      rhythm.stats.perfect++;
+      rhythm.stats.hits++;
+      rhythm.stats.combo++;
+      rhythm.stats.raw += 10;
+    } else if (judge === 'great'){
+      rhythm.stats.great++;
+      rhythm.stats.hits++;
+      rhythm.stats.combo++;
+      rhythm.stats.raw += 7;
+    } else if (judge === 'good'){
+      rhythm.stats.good++;
+      rhythm.stats.hits++;
+      rhythm.stats.combo = 0;
+      rhythm.stats.raw += 4;
+    } else {
+      rhythm.stats.miss++;
+      rhythm.stats.combo = 0;
+    }
+    
+    rhythm.stats.bestCombo = Math.max(rhythm.stats.bestCombo, rhythm.stats.combo);
+    rhythmUpdateHUD();
+  }
+}
+
+function rhythmKeydown(e){
+  const key = e.key.toLowerCase();
+  const map = { 'd':0, 'f':1, 'j':2, 'k':3 };
+  if (key in map) {
+    e.preventDefault();
+    rhythmTryHitLane(map[key]);
+  }
+}
+
+function rhythmLoop(){
+  if (!rhythm.running) return;
+  
+  const t = performance.now() - rhythm.startT;
+  const H = rhythm.height;
+  const hitY = H - 54;
+  
+  for (const nt of rhythm.notes){
+    if (nt.spawned || nt.hit) continue;
+    
+    if (t >= nt.time - rhythm.travel){
+      nt.spawned = true;
+      nt.el = rhythmSpawnNote(nt.lane, -20);
+    }
+  }
+  
+  for (const nt of rhythm.notes){
+    if (!nt.spawned || !nt.el || nt.hit) continue;
+    
+    const elapsed = t - (nt.time - rhythm.travel);
+    const progress = elapsed / rhythm.travel;
+    const y = progress * (H + 20);
+    
+    nt.el.style.transform = `translateY(${y}px)`;
+    
+    if (!nt.hit && t - nt.time > 200){
+      nt.hit = true;
+      rhythm.stats.miss++;
+      rhythm.stats.total++;
+      rhythm.stats.combo = 0;
+      rhythmUpdateHUD();
+      
+      if (nt.el) {
+        nt.el.style.opacity = '0.3';
+        setTimeout(() => {
+          if (nt.el && nt.el.parentNode) {
+            nt.el.remove();
+            nt.el = null;
+          }
+        }, 200);
+      }
+    }
+    
+    if (y > H + 50){
+      if (nt.el && nt.el.parentNode) {
+        nt.el.remove();
+        nt.el = null;
+      }
+    }
+  }
+  
+  const allProcessed = rhythm.notes.every(n => n.hit);
+  const allGone = rhythm.notes.every(n => !n.el);
+  
+  if (allProcessed && allGone){
+    rhythmEnd();
+    return;
+  }
+  
+  rhythm.raf = requestAnimationFrame(rhythmLoop);
+}
+
+function startRhythm(){
+  if (!canStartGame('rhythm')) return;
+  incAttempt('rhythm');
+  
+  rhythm.stage = $('#rhythmStage');
+  rhythm.height = rhythm.stage.clientHeight || 420;
+  rhythm.travel = 1800;
+  rhythm.notes = makeBeatmap();
+  rhythm.stats = { perfect:0, great:0, good:0, miss:0, combo:0, bestCombo:0, hits:0, total:0, raw:0 };
+  
+  resetRhythmHUD();
+  rhythmClearNotes();
+  
+  if (rhythm.raf) {
+    cancelAnimationFrame(rhythm.raf);
+    rhythm.raf = null;
+  }
+  
+  rhythm.running = true;
+  rhythm.startT = performance.now();
+  
+  document.addEventListener('keydown', rhythmKeydown);
+
+  
+  $$('#rhythmStage .keycap').forEach(k => {
+    const lane = parseInt(k.dataset.lane, 10) || 0;
+    
+    const handleTouch = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      rhythmTryHitLane(lane);
+      
+      k.style.filter = 'brightness(1.5)';
+      setTimeout(() => {
+        k.style.filter = '';
+      }, 100);
+    };
+    
+    k.onpointerdown = handleTouch;
+    k.ontouchstart = handleTouch;
+  });
+  
+  rhythm.raf = requestAnimationFrame(rhythmLoop);
+}
+$('#rhythmStart').addEventListener('click', startRhythm);
 
     // 게임 로직은 이전과 동일 (생략)
     // ... [모든 게임 로직 코드는 이전과 동일]
